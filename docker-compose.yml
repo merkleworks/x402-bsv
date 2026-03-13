@@ -1,0 +1,49 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  x402-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-8402}:${PORT:-8402}"
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      REDIS_ENABLED: "true"
+      # Browser-accessible URL for the dashboard (the gateway never calls the delegator)
+      DELEGATOR_URL: "http://localhost:${DELEGATOR_PORT:-8403}"
+    restart: unless-stopped
+
+  x402-delegator:
+    build:
+      context: .
+      dockerfile: Dockerfile.delegator
+    ports:
+      - "${DELEGATOR_PORT:-8403}:${DELEGATOR_PORT:-8403}"
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      REDIS_ENABLED: "true"
+      PORT: "${DELEGATOR_PORT:-8403}"
+    restart: unless-stopped
+
+volumes:
+  redis_data:

@@ -1,0 +1,56 @@
+# Binaries
+x402-server
+x402-client
+server
+client
+keygen
+setup
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+coverage.html
+
+# Environment files
+.env
+.env.local
+.env.*.backup
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build output
+/bin/
+/dist/
+
+# React dashboard
+dashboard/node_modules/
+dashboard/dist/
+cmd/server/static/
+
+# Deployment artifacts (infrastructure-specific)
+deploy/
+
+# Client JS build artifacts
+client-js/node_modules/
+client-js/dist/
+
+# Compiled binaries (root)
+delegator
+
+# IDE / workspace
+.claude/

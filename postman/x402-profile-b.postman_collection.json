@@ -1,0 +1,610 @@
+{
+	"info": {
+		"_postman_id": "x402-profile-b-collection",
+		"name": "x402 Profile B - Template Settlement Flow",
+		"description": "Focused collection for testing the x402 Profile B (Gateway Template) settlement flow.\n\nIn Profile B, the gateway pre-signs a transaction template containing the nonce input (signed with SIGHASH_SINGLE|ANYONECANPAY|FORKID = 0xC3) and the payment output. The client-orchestrated flow sends this template to the delegator, which adds fee inputs and returns the completed transaction.\n\nArchitecture:\n- Gateway ({{gatewayUrl}}): Issues challenges with pre-signed templates, verifies proofs\n- Delegator ({{delegatorUrl}}): Adds fee inputs to template transactions, signs fee inputs\n- Client: Orchestrates the flow (no BSV crypto needed)\n\n6-Step Protocol Flow:\n1. GET /v1/expensive -> 402 + X402-Challenge (contains template)\n2. Decode challenge -> extract template.rawtx_hex\n3. POST /delegate/x402 with partial_tx -> completed_tx + txid\n4. POST {{broadcastUrl}} with txhex -> broadcast to BSV network\n5. Build X402-Proof header from completed_tx + challenge binding\n6. GET /v1/expensive with X402-Proof -> 200 OK\n\nPrerequisites:\n- Gateway running with TEMPLATE_MODE=true\n- Delegator running on separate port\n- BSV broadcast endpoint reachable (default: WhatsOnChain)\n\nRun the requests in order (Step 1 through Step 6).",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "gatewayUrl",
+			"value": "http://localhost:8402",
+			"type": "string"
+		},
+		{
+			"key": "delegatorUrl",
+			"value": "http://localhost:8403",
+			"type": "string"
+		},
+		{
+			"key": "broadcastUrl",
+			"value": "https://api.whatsonchain.com/v1/bsv/main/tx/raw",
+			"type": "string",
+			"description": "WoC broadcast endpoint (fallback or standalone)"
+		},
+		{
+			"key": "arcUrl",
+			"value": "https://arc.gorillapool.io/v1",
+			"type": "string",
+			"description": "GorillaPool ARC base URL (primary broadcast in composite mode)"
+		}
+	],
+	"item": [
+		{
+			"name": "Profile B Settlement Flow",
+			"description": "Complete 6-step x402 Profile B settlement flow.\n\nRun requests sequentially: Step 1 -> Step 2-3 -> Step 4 -> Step 5-6 -> Bonus.\n\nSteps 2 and 5 are logical steps handled in pre-request scripts (decode challenge and build proof). Steps 3 and 4 map to HTTP calls (delegator and broadcast). Step 6 is the final paid request.",
+			"item": [
+				{
+					"name": "Step 1: Request Protected Resource (triggers 402)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{gatewayUrl}}/v1/expensive",
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"v1",
+								"expensive"
+							]
+						},
+						"description": "Step 1 of 6: Request the protected resource without payment.\n\nExpected response:\n- HTTP 402 Payment Required\n- X402-Challenge header: base64url-encoded JSON containing the challenge with a pre-signed template\n- X402-Accept header: 'bsv-tx-v1'\n\nThe test script:\n- Asserts 402 status and required headers\n- Extracts and stores the X402-Challenge for Step 2\n- Validates challenge structure (version, scheme, template, nonce, binding fields)"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// =============================================",
+									"// Step 1: Validate 402 response and extract challenge",
+									"// =============================================",
+									"",
+									"pm.test('Returns 402 Payment Required', function () {",
+									"    pm.response.to.have.status(402);",
+									"});",
+									"",
+									"pm.test('Has X402-Challenge header', function () {",
+									"    pm.response.to.have.header('X402-Challenge');",
+									"});",
+									"",
+									"pm.test('Has X402-Accept header with bsv-tx-v1', function () {",
+									"    pm.response.to.have.header('X402-Accept');",
+									"    var accept = pm.response.headers.get('X402-Accept');",
+									"    pm.expect(accept).to.eql('bsv-tx-v1');",
+									"});",
+									"",
+									"pm.test('Response body indicates payment required', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.status).to.eql(402);",
+									"    pm.expect(json.code).to.eql('payment_required');",
+									"});",
+									"",
+									"// Store the raw challenge header",
+									"var challengeEncoded = pm.response.headers.get('X402-Challenge');",
+									"if (challengeEncoded) {",
+									"    pm.collectionVariables.set('challengeEncoded', challengeEncoded);",
+									"    console.log('Step 1: Stored challengeEncoded (' + challengeEncoded.length + ' chars)');",
+									"",
+									"    // Decode to validate structure",
+									"    function base64urlDecode(str) {",
+									"        str = str.replace(/-/g, '+').replace(/_/g, '/');",
+									"        while (str.length % 4) str += '=';",
+									"        return atob(str);",
+									"    }",
+									"",
+									"    try {",
+									"        var challengeJSON = base64urlDecode(challengeEncoded);",
+									"        var challenge = JSON.parse(challengeJSON);",
+									"        console.log('Step 1: Challenge decoded successfully');",
+									"        console.log('  version:', challenge.v);",
+									"        console.log('  scheme:', challenge.scheme);",
+									"        console.log('  amount_sats:', challenge.amount_sats);",
+									"        console.log('  expires_at:', new Date(challenge.expires_at * 1000).toISOString());",
+									"        console.log('  domain:', challenge.domain);",
+									"        console.log('  method:', challenge.method);",
+									"        console.log('  path:', challenge.path);",
+									"",
+									"        pm.test('Challenge version is 1', function () {",
+									"            pm.expect(challenge.v).to.eql('1');",
+									"        });",
+									"",
+									"        pm.test('Challenge scheme is bsv-tx-v1', function () {",
+									"            pm.expect(challenge.scheme).to.eql('bsv-tx-v1');",
+									"        });",
+									"",
+									"        pm.test('Challenge has amount_sats > 0', function () {",
+									"            pm.expect(challenge.amount_sats).to.be.a('number');",
+									"            pm.expect(challenge.amount_sats).to.be.greaterThan(0);",
+									"        });",
+									"",
+									"        pm.test('Challenge has payee_locking_script_hex', function () {",
+									"            pm.expect(challenge).to.have.property('payee_locking_script_hex');",
+									"            pm.expect(challenge.payee_locking_script_hex.length).to.be.greaterThan(0);",
+									"        });",
+									"",
+									"        pm.test('Challenge has nonce_utxo for replay protection', function () {",
+									"            pm.expect(challenge).to.have.property('nonce_utxo');",
+									"            pm.expect(challenge.nonce_utxo).to.have.property('txid');",
+									"            pm.expect(challenge.nonce_utxo.txid).to.have.lengthOf(64);",
+									"            pm.expect(challenge.nonce_utxo).to.have.property('vout');",
+									"            pm.expect(challenge.nonce_utxo).to.have.property('satoshis');",
+									"            pm.expect(challenge.nonce_utxo).to.have.property('locking_script_hex');",
+									"        });",
+									"",
+									"        pm.test('Challenge has template (Profile B)', function () {",
+									"            pm.expect(challenge).to.have.property('template');",
+									"            pm.expect(challenge.template).to.have.property('rawtx_hex');",
+									"            pm.expect(challenge.template.rawtx_hex.length).to.be.greaterThan(0);",
+									"            pm.expect(challenge.template).to.have.property('price_sats');",
+									"            pm.expect(challenge.template.price_sats).to.be.greaterThan(0);",
+									"        });",
+									"",
+									"        pm.test('Challenge has request binding fields', function () {",
+									"            pm.expect(challenge).to.have.property('domain');",
+									"            pm.expect(challenge).to.have.property('method');",
+									"            pm.expect(challenge).to.have.property('path');",
+									"            pm.expect(challenge).to.have.property('req_headers_sha256');",
+									"            pm.expect(challenge).to.have.property('req_body_sha256');",
+									"        });",
+									"",
+									"        pm.test('Challenge not expired', function () {",
+									"            var now = Math.floor(Date.now() / 1000);",
+									"            pm.expect(challenge.expires_at).to.be.greaterThan(now);",
+									"        });",
+									"",
+									"        if (challenge.template) {",
+									"            console.log('  template.rawtx_hex length:', challenge.template.rawtx_hex.length, 'hex chars');",
+									"            console.log('  template.price_sats:', challenge.template.price_sats);",
+									"        }",
+									"        if (challenge.nonce_utxo) {",
+									"            console.log('  nonce_utxo.txid:', challenge.nonce_utxo.txid);",
+									"            console.log('  nonce_utxo.vout:', challenge.nonce_utxo.vout);",
+									"        }",
+									"    } catch (e) {",
+									"        console.error('Step 1: Failed to decode challenge:', e.message);",
+									"    }",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 2-3: Decode Challenge & Call Delegator",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"partial_tx\":\"{{templateRawtxHex}}\"}"
+						},
+						"url": {
+							"raw": "{{delegatorUrl}}/delegate/x402",
+							"host": [
+								"{{delegatorUrl}}"
+							],
+							"path": [
+								"delegate",
+								"x402"
+							]
+						},
+						"description": "Steps 2-3 of 6: Decode the challenge and send template to delegator.\n\nStep 2 (pre-request script):\n- Decodes the base64url challenge from Step 1\n- Extracts template.rawtx_hex and stores as templateRawtxHex\n- Stores all challenge binding fields (domain, method, path, query, header/body hashes)\n- Computes SHA-256 hash of the challenge JSON for proof binding\n\nStep 3 (HTTP request):\n- POST /delegate/x402 with {\"partial_tx\": \"<template_rawtx_hex>\"}\n- Delegator adds fee inputs from its UTXO pool\n- Delegator signs the fee inputs\n- Returns {\"completed_tx\": \"<hex>\", \"txid\": \"<hex>\"}"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// =============================================",
+									"// Step 2: Decode the challenge from Step 1",
+									"// =============================================",
+									"",
+									"var challengeEncoded = pm.collectionVariables.get('challengeEncoded');",
+									"if (!challengeEncoded) {",
+									"    throw new Error('No challengeEncoded found. Run Step 1 first.');",
+									"}",
+									"",
+									"// Base64url decode helper",
+									"function base64urlDecode(str) {",
+									"    str = str.replace(/-/g, '+').replace(/_/g, '/');",
+									"    while (str.length % 4) str += '=';",
+									"    return atob(str);",
+									"}",
+									"",
+									"// Decode and parse challenge",
+									"var challengeJSON = base64urlDecode(challengeEncoded);",
+									"var challenge = JSON.parse(challengeJSON);",
+									"pm.collectionVariables.set('challengeJSON', challengeJSON);",
+									"console.log('Step 2: Challenge decoded successfully');",
+									"console.log('  amount_sats:', challenge.amount_sats);",
+									"console.log('  scheme:', challenge.scheme);",
+									"",
+									"// -------------------------------------------------------",
+									"// Store challenge binding fields for proof building (Step 5)",
+									"// -------------------------------------------------------",
+									"pm.collectionVariables.set('challengeDomain', challenge.domain);",
+									"pm.collectionVariables.set('challengeMethod', challenge.method);",
+									"pm.collectionVariables.set('challengePath', challenge.path);",
+									"pm.collectionVariables.set('challengeQuery', challenge.query || '');",
+									"pm.collectionVariables.set('challengeReqHeadersSha256', challenge.req_headers_sha256);",
+									"pm.collectionVariables.set('challengeReqBodySha256', challenge.req_body_sha256);",
+									"console.log('Step 2: Challenge binding fields stored');",
+									"console.log('  domain:', challenge.domain);",
+									"console.log('  method:', challenge.method);",
+									"console.log('  path:', challenge.path);",
+									"",
+									"// -------------------------------------------------------",
+									"// Extract template rawtx_hex for the request body",
+									"// -------------------------------------------------------",
+									"if (!challenge.template || !challenge.template.rawtx_hex) {",
+									"    throw new Error('No template in challenge. Gateway must run with TEMPLATE_MODE=true (Profile B).');",
+									"}",
+									"pm.collectionVariables.set('templateRawtxHex', challenge.template.rawtx_hex);",
+									"console.log('Step 2: Template extracted');",
+									"console.log('  rawtx_hex length:', challenge.template.rawtx_hex.length, 'hex chars');",
+									"console.log('  price_sats:', challenge.template.price_sats);",
+									"",
+									"// -------------------------------------------------------",
+									"// Compute challenge SHA-256 hash for proof binding",
+									"// CryptoJS is built into the Postman sandbox",
+									"// -------------------------------------------------------",
+									"var challengeHash = CryptoJS.SHA256(challengeJSON).toString();",
+									"pm.collectionVariables.set('challengeSha256', challengeHash);",
+									"console.log('Step 2: Challenge SHA-256:', challengeHash);",
+									"",
+									"console.log('Step 2 complete. Proceeding to Step 3 (delegator call)...');"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// =============================================",
+									"// Step 3: Validate delegator response",
+									"// =============================================",
+									"",
+									"pm.test('Delegator returns 200 OK', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"var json = pm.response.json();",
+									"",
+									"pm.test('Response has completed_tx (hex string)', function () {",
+									"    pm.expect(json).to.have.property('completed_tx');",
+									"    pm.expect(json.completed_tx).to.be.a('string');",
+									"    pm.expect(json.completed_tx.length).to.be.greaterThan(0);",
+									"    pm.expect(json.completed_tx).to.match(/^[0-9a-f]+$/);",
+									"});",
+									"",
+									"pm.test('Response has txid (64 hex chars)', function () {",
+									"    pm.expect(json).to.have.property('txid');",
+									"    pm.expect(json.txid).to.be.a('string');",
+									"    pm.expect(json.txid).to.have.lengthOf(64);",
+									"    pm.expect(json.txid).to.match(/^[0-9a-f]{64}$/);",
+									"});",
+									"",
+									"pm.test('completed_tx is longer than template (fee inputs added)', function () {",
+									"    var templateHex = pm.collectionVariables.get('templateRawtxHex');",
+									"    if (templateHex) {",
+									"        pm.expect(json.completed_tx.length).to.be.greaterThan(templateHex.length);",
+									"        console.log('Step 3: Template was', templateHex.length, 'hex chars, completed tx is', json.completed_tx.length, 'hex chars');",
+									"    }",
+									"});",
+									"",
+									"// Store for proof building",
+									"if (json.completed_tx) {",
+									"    pm.collectionVariables.set('completedTxHex', json.completed_tx);",
+									"    console.log('Step 3: Stored completedTxHex (' + json.completed_tx.length + ' hex chars)');",
+									"}",
+									"if (json.txid) {",
+									"    pm.collectionVariables.set('txid', json.txid);",
+									"    console.log('Step 3: Stored txid:', json.txid);",
+									"}",
+									"",
+									"console.log('Step 3 complete. Proceed to Step 4 (broadcast)...');"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 4: Broadcast Transaction",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"txhex\": \"{{completedTxHex}}\"}"
+						},
+						"url": {
+							"raw": "{{broadcastUrl}}",
+							"host": [
+								"{{broadcastUrl}}"
+							]
+						},
+						"description": "Step 4 of 6: Broadcast the completed transaction to the BSV network. The gateway will only accept the proof once the transaction becomes visible in the mempool.\n\nBroadcast endpoints (change the broadcastUrl collection variable):\n\n  WhatsOnChain (default):\n    POST https://api.whatsonchain.com/v1/bsv/main/tx/raw\n    Content-Type: application/json\n    Body: {\"txhex\": \"<hex>\"}\n\n  GorillaPool ARC (recommended primary):\n    POST https://arc.gorillapool.io/v1/tx\n    Content-Type: application/json\n    Body: {\"rawTx\": \"<hex>\"}\n    Note: ARC uses \"rawTx\" (not \"txhex\"). Also accepts application/octet-stream (raw bytes) and text/plain (hex string).\n\nExpected response: 200 or 202 with a txid confirming acceptance."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// =============================================",
+									"// Step 4: Validate broadcast response",
+									"// =============================================",
+									"",
+									"pm.test('Broadcast accepted', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 202]);",
+									"});",
+									"",
+									"var json = pm.response.json();",
+									"",
+									"if (json.txid) {",
+									"    pm.collectionVariables.set('broadcastTxid', json.txid);",
+									"    console.log('Step 4: Broadcast confirmed');",
+									"    console.log('  txid:', json.txid);",
+									"} else {",
+									"    console.log('Step 4: Broadcast accepted (no txid in response body)');",
+									"    console.log('  Using txid from delegator:', pm.collectionVariables.get('txid'));",
+									"}",
+									"",
+									"console.log('Step 4 complete. Waiting for mempool propagation...');",
+									"",
+									"// Allow mempool propagation before submitting proof",
+									"setTimeout(function () {",
+									"    postman.setNextRequest('Step 5-6: Build Proof & Access Resource');",
+									"}, 2000);"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 5-6: Build Proof & Access Resource",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X402-Proof",
+								"value": "{{proofHeader}}"
+							}
+						],
+						"url": {
+							"raw": "{{gatewayUrl}}/v1/expensive",
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"v1",
+								"expensive"
+							]
+						},
+						"description": "Steps 5-6 of 6: Build the payment proof and access the protected resource.\n\nStep 5 (pre-request script):\n- Converts completed_tx from hex to base64 (rawtx_b64 field)\n- Builds the X402-Proof JSON object with:\n  - v: \"1\" (protocol version)\n  - scheme: \"bsv-tx-v1\" (payment scheme)\n  - txid: transaction ID from delegator\n  - rawtx_b64: completed transaction as standard base64\n  - challenge_sha256: SHA-256 hash of the original challenge JSON\n  - request: binding fields (domain, method, path, query, header/body hashes)\n- Base64url encodes the proof JSON\n- Sets the X402-Proof header\n\nStep 6 (HTTP request):\n- GET /v1/expensive with X402-Proof header\n- Gateway verifies: version, scheme, challenge binding, nonce spend, payee output, mempool\n- Returns 200 with protected data and X402-Receipt header"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// =============================================",
+									"// Step 5: Build the X402-Proof header",
+									"// =============================================",
+									"",
+									"// Gather all stored variables from previous steps",
+									"var completedTxHex = pm.collectionVariables.get('completedTxHex');",
+									"var txid = pm.collectionVariables.get('txid');",
+									"var challengeSha256 = pm.collectionVariables.get('challengeSha256');",
+									"var challengeDomain = pm.collectionVariables.get('challengeDomain');",
+									"var challengeMethod = pm.collectionVariables.get('challengeMethod');",
+									"var challengePath = pm.collectionVariables.get('challengePath');",
+									"var challengeQuery = pm.collectionVariables.get('challengeQuery');",
+									"var challengeReqHeadersSha256 = pm.collectionVariables.get('challengeReqHeadersSha256');",
+									"var challengeReqBodySha256 = pm.collectionVariables.get('challengeReqBodySha256');",
+									"",
+									"// Validate all required variables are present",
+									"if (!completedTxHex) throw new Error('Missing completedTxHex. Run Steps 1-3 first.');",
+									"if (!txid) throw new Error('Missing txid. Run Steps 1-3 first.');",
+									"if (!challengeSha256) throw new Error('Missing challengeSha256. Run Steps 1-3 first.');",
+									"if (!challengeDomain) throw new Error('Missing challengeDomain. Run Steps 1-3 first.');",
+									"",
+									"// -------------------------------------------------------",
+									"// Helper: convert hex string to standard base64",
+									"// -------------------------------------------------------",
+									"function hexToBase64(hex) {",
+									"    var bytes = [];",
+									"    for (var i = 0; i < hex.length; i += 2) {",
+									"        bytes.push(parseInt(hex.substr(i, 2), 16));",
+									"    }",
+									"    return btoa(String.fromCharCode.apply(null, bytes));",
+									"}",
+									"",
+									"// -------------------------------------------------------",
+									"// Helper: encode string to base64url (no padding)",
+									"// -------------------------------------------------------",
+									"function base64urlEncode(str) {",
+									"    return btoa(str).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');",
+									"}",
+									"",
+									"// -------------------------------------------------------",
+									"// Build the X402-Proof object per protocol spec",
+									"// -------------------------------------------------------",
+									"var rawtxB64 = hexToBase64(completedTxHex);",
+									"",
+									"var proof = {",
+									"    v: '1',",
+									"    scheme: 'bsv-tx-v1',",
+									"    txid: txid,",
+									"    rawtx_b64: rawtxB64,",
+									"    challenge_sha256: challengeSha256,",
+									"    request: {",
+									"        domain: challengeDomain,",
+									"        method: challengeMethod,",
+									"        path: challengePath,",
+									"        query: challengeQuery || '',",
+									"        req_headers_sha256: challengeReqHeadersSha256,",
+									"        req_body_sha256: challengeReqBodySha256",
+									"    }",
+									"};",
+									"",
+									"console.log('Step 5: Proof object built');",
+									"console.log('  v:', proof.v);",
+									"console.log('  scheme:', proof.scheme);",
+									"console.log('  txid:', proof.txid);",
+									"console.log('  rawtx_b64 length:', proof.rawtx_b64.length, 'chars');",
+									"console.log('  challenge_sha256:', proof.challenge_sha256);",
+									"console.log('  request.domain:', proof.request.domain);",
+									"console.log('  request.method:', proof.request.method);",
+									"console.log('  request.path:', proof.request.path);",
+									"",
+									"// Base64url encode the proof JSON for the header value",
+									"var proofJson = JSON.stringify(proof);",
+									"var proofEncoded = base64urlEncode(proofJson);",
+									"pm.collectionVariables.set('proofHeader', proofEncoded);",
+									"console.log('Step 5: X402-Proof header set (' + proofEncoded.length + ' chars)');",
+									"console.log('Step 5 complete. Submitting proof (Step 6)...');"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// =============================================",
+									"// Step 6: Validate paid response",
+									"// =============================================",
+									"",
+									"pm.test('Returns 200 OK (payment accepted)', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response has protected data', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json).to.have.property('data');",
+									"    pm.expect(json.data).to.include('100 satoshis');",
+									"    pm.expect(json).to.have.property('timestamp');",
+									"    pm.expect(json).to.have.property('path');",
+									"    pm.expect(json.path).to.eql('/v1/expensive');",
+									"});",
+									"",
+									"pm.test('Has X402-Receipt header (64 hex chars)', function () {",
+									"    pm.response.to.have.header('X402-Receipt');",
+									"    var receipt = pm.response.headers.get('X402-Receipt');",
+									"    pm.expect(receipt).to.match(/^[0-9a-f]{64}$/);",
+									"});",
+									"",
+									"pm.test('Has X402-Receipt-Time header', function () {",
+									"    var receiptTime = pm.response.headers.get('X402-Receipt-Time');",
+									"    if (receiptTime) {",
+									"        pm.expect(receiptTime).to.be.a('string');",
+									"        // Should be ISO 8601 format",
+									"        pm.expect(receiptTime).to.match(/^\\d{4}-\\d{2}-\\d{2}T/);",
+									"    }",
+									"});",
+									"",
+									"pm.test('Has X402-Status accepted', function () {",
+									"    var status = pm.response.headers.get('X402-Status');",
+									"    if (status) {",
+									"        pm.expect(status).to.eql('accepted');",
+									"    }",
+									"});",
+									"",
+									"// Log completion summary",
+									"console.log('');",
+									"console.log('========================================');",
+									"console.log('  x402 Profile B Flow Complete!');",
+									"console.log('========================================');",
+									"console.log('  Receipt:', pm.response.headers.get('X402-Receipt'));",
+									"console.log('  Status:', pm.response.headers.get('X402-Status'));",
+									"console.log('  TxID:', pm.collectionVariables.get('txid'));",
+									"console.log('========================================');"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Bonus: Replay Same Proof (expect rejection)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X402-Proof",
+								"value": "{{proofHeader}}"
+							}
+						],
+						"url": {
+							"raw": "{{gatewayUrl}}/v1/expensive",
+							"host": [
+								"{{gatewayUrl}}"
+							],
+							"path": [
+								"v1",
+								"expensive"
+							]
+						},
+						"description": "Bonus test: Replay the same proof from Step 5-6.\n\nBehavior depends on the gateway's replay and mempool configuration:\n- If the challenge is still cached and idempotent re-serve is enabled: 200 OK (same receipt)\n- If the challenge has been consumed: 400 challenge_not_found\n- If replay detection catches it: 409 double_spend\n\nThis tests the gateway's replay protection mechanisms."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// Replay protection test",
+									"// The exact response depends on configuration:",
+									"// - 200: idempotent re-serve (same nonce, same tx)",
+									"// - 400: challenge_not_found (challenge consumed after first use)",
+									"// - 409: double_spend (different tx tried with same nonce)",
+									"",
+									"pm.test('Replay handled correctly', function () {",
+									"    var code = pm.response.code;",
+									"    console.log('Replay response status:', code);",
+									"",
+									"    // Any of these are valid replay handling behaviors",
+									"    pm.expect(code).to.be.oneOf([200, 400, 409]);",
+									"",
+									"    if (code === 200) {",
+									"        console.log('Idempotent re-serve: same proof accepted again');",
+									"        pm.response.to.have.header('X402-Receipt');",
+									"    } else if (code === 400) {",
+									"        var json = pm.response.json();",
+									"        console.log('Challenge consumed:', json.code);",
+									"        pm.expect(json.code).to.eql('challenge_not_found');",
+									"    } else if (code === 409) {",
+									"        var json = pm.response.json();",
+									"        console.log('Replay rejected:', json.code);",
+									"        pm.expect(json.code).to.eql('double_spend');",
+									"    }",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		}
+	]
+}

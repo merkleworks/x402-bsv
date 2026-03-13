@@ -1,0 +1,1116 @@
+{
+	"info": {
+		"_postman_id": "x402-gateway-collection",
+		"name": "x402 Gateway",
+		"description": "Complete Postman collection for the x402 BSV payment gateway.\n\nArchitecture:\n- Gateway: http://localhost:8402 (issues challenges, verifies proofs)\n- Delegator: http://localhost:8403 (adds fee inputs to template transactions)\n- Client orchestrates: Gateway -> Delegator -> (Broadcast) -> Gateway\n\nProtocol Flow (Profile B - Template Mode):\n1. GET /v1/expensive -> 402 + X402-Challenge header\n2. Decode challenge (base64url JSON) -> extract template.rawtx_hex\n3. POST /delegate/x402 with {\"partial_tx\":\"<rawtx_hex>\"} -> {\"completed_tx\":\"<hex>\",\"txid\":\"<hex>\"}\n4. Broadcast completed_tx (skipped in demo mode)\n5. Build X402-Proof header -> base64url encode\n6. GET /v1/expensive with X402-Proof header -> 200 OK\n\nNo BSV crypto library needed. All signing is handled server-side by the gateway and delegator.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "gatewayUrl",
+			"value": "http://localhost:8402",
+			"type": "string"
+		},
+		{
+			"key": "delegatorUrl",
+			"value": "http://localhost:8403",
+			"type": "string"
+		},
+		{
+			"key": "arcUrl",
+			"value": "https://arc.gorillapool.io/v1",
+			"type": "string",
+			"description": "GorillaPool ARC base URL (used in composite broadcaster mode)"
+		},
+		{
+			"key": "wocBroadcastUrl",
+			"value": "https://api.whatsonchain.com/v1/bsv/main/tx/raw",
+			"type": "string",
+			"description": "WhatsOnChain broadcast endpoint (fallback or standalone)"
+		}
+	],
+	"item": [
+		{
+			"name": "Health & Status",
+			"description": "Health check endpoints for the gateway and delegator services.",
+			"item": [
+				{
+					"name": "Gateway Health",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{gatewayUrl}}/health",
+							"host": ["{{gatewayUrl}}"],
+							"path": ["health"]
+						},
+						"description": "Returns gateway health status including pool statistics, network, profile mode, and version."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Gateway is healthy', function () {",
+									"    pm.response.to.have.status(200);",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.status).to.eql('ok');",
+									"});",
+									"",
+									"pm.test('Response has pool stats', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json).to.have.property('nonce_pool');",
+									"    pm.expect(json).to.have.property('fee_pool');",
+									"    pm.expect(json).to.have.property('payment_pool');",
+									"});",
+									"",
+									"pm.test('Response has network info', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json).to.have.property('network');",
+									"    pm.expect(json).to.have.property('profile');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Delegator Health",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{delegatorUrl}}/health",
+							"host": ["{{delegatorUrl}}"],
+							"path": ["health"]
+						},
+						"description": "Returns delegator health status including uptime and pool information."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Delegator is healthy', function () {",
+									"    pm.response.to.have.status(200);",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.status).to.eql('ok');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "x402 Protocol Flow (Manual)",
+			"description": "Step-by-step x402 payment flow for Profile B (Gateway Template mode).\n\nRun these requests in order:\n1. Unpaid Request - triggers 402, extracts challenge\n2. Call Delegator - decodes challenge in pre-request script, sends template to delegator for fee input addition\n3. Broadcast (placeholder) - skipped in demo mode\n4. Paid Request - builds proof header in pre-request script and accesses protected resource\n\nEach step stores collection variables for the next step via test/pre-request scripts.\n\nPrerequisites:\n- Gateway running on {{gatewayUrl}} with TEMPLATE_MODE=true\n- Delegator running on {{delegatorUrl}}",
+			"item": [
+				{
+					"name": "Step 1: Unpaid Request (get 402 challenge)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{gatewayUrl}}/v1/expensive",
+							"host": ["{{gatewayUrl}}"],
+							"path": ["v1", "expensive"]
+						},
+						"description": "Request the protected resource without payment.\n\nThe gateway responds with:\n- HTTP 402 Payment Required\n- X402-Challenge header (base64url-encoded JSON challenge)\n- X402-Accept header (supported payment schemes)\n\nThe test script extracts the challenge, decodes it, and stores it for subsequent steps."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Returns 402 Payment Required', function () {",
+									"    pm.response.to.have.status(402);",
+									"});",
+									"",
+									"pm.test('Has X402-Challenge header', function () {",
+									"    pm.response.to.have.header('X402-Challenge');",
+									"});",
+									"",
+									"pm.test('Has X402-Accept header', function () {",
+									"    pm.response.to.have.header('X402-Accept');",
+									"    var accept = pm.response.headers.get('X402-Accept');",
+									"    pm.expect(accept).to.eql('bsv-tx-v1');",
+									"});",
+									"",
+									"pm.test('Response body indicates payment required', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json.status).to.eql(402);",
+									"    pm.expect(json.code).to.eql('payment_required');",
+									"});",
+									"",
+									"// Extract and store the challenge",
+									"var challengeEncoded = pm.response.headers.get('X402-Challenge');",
+									"if (challengeEncoded) {",
+									"    pm.collectionVariables.set('challengeEncoded', challengeEncoded);",
+									"    console.log('Stored challengeEncoded (' + challengeEncoded.length + ' chars)');",
+									"",
+									"    // Decode base64url to inspect challenge content",
+									"    function base64urlDecode(str) {",
+									"        str = str.replace(/-/g, '+').replace(/_/g, '/');",
+									"        while (str.length % 4) str += '=';",
+									"        return atob(str);",
+									"    }",
+									"",
+									"    try {",
+									"        var challengeJSON = base64urlDecode(challengeEncoded);",
+									"        var challenge = JSON.parse(challengeJSON);",
+									"        console.log('Challenge decoded:', JSON.stringify(challenge, null, 2));",
+									"        pm.collectionVariables.set('challengeJSON', challengeJSON);",
+									"",
+									"        pm.test('Challenge has version 1', function () {",
+									"            pm.expect(challenge.v).to.eql('1');",
+									"        });",
+									"",
+									"        pm.test('Challenge has scheme bsv-tx-v1', function () {",
+									"            pm.expect(challenge.scheme).to.eql('bsv-tx-v1');",
+									"        });",
+									"",
+									"        pm.test('Challenge has amount_sats', function () {",
+									"            pm.expect(challenge.amount_sats).to.be.a('number');",
+									"            pm.expect(challenge.amount_sats).to.be.greaterThan(0);",
+									"        });",
+									"",
+									"        pm.test('Challenge has nonce_utxo', function () {",
+									"            pm.expect(challenge).to.have.property('nonce_utxo');",
+									"            pm.expect(challenge.nonce_utxo).to.have.property('txid');",
+									"            pm.expect(challenge.nonce_utxo).to.have.property('vout');",
+									"        });",
+									"",
+									"        pm.test('Challenge has template (Profile B)', function () {",
+									"            pm.expect(challenge).to.have.property('template');",
+									"            pm.expect(challenge.template).to.have.property('rawtx_hex');",
+									"            pm.expect(challenge.template).to.have.property('price_sats');",
+									"        });",
+									"",
+									"        pm.test('Challenge has request binding fields', function () {",
+									"            pm.expect(challenge).to.have.property('domain');",
+									"            pm.expect(challenge).to.have.property('method');",
+									"            pm.expect(challenge).to.have.property('path');",
+									"            pm.expect(challenge).to.have.property('req_headers_sha256');",
+									"            pm.expect(challenge).to.have.property('req_body_sha256');",
+									"        });",
+									"",
+									"        pm.test('Challenge has expiry', function () {",
+									"            pm.expect(challenge).to.have.property('expires_at');",
+									"            pm.expect(challenge.expires_at).to.be.greaterThan(Math.floor(Date.now() / 1000));",
+									"        });",
+									"    } catch (e) {",
+									"        console.error('Failed to decode challenge:', e.message);",
+									"    }",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 2: Call Delegator (add fee inputs)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"partial_tx\":\"{{templateRawtxHex}}\"}"
+						},
+						"url": {
+							"raw": "{{delegatorUrl}}/delegate/x402",
+							"host": ["{{delegatorUrl}}"],
+							"path": ["delegate", "x402"]
+						},
+						"description": "Send the template transaction from the challenge to the delegator.\n\nThe pre-request script:\n1. Decodes the challenge from Step 1 (base64url -> JSON)\n2. Extracts template.rawtx_hex and stores it as templateRawtxHex\n3. Stores all challenge binding fields for proof building in Step 4\n4. Computes the challenge SHA-256 hash for proof binding\n\nThe delegator:\n1. Parses the partial transaction\n2. Validates structure (nonce input, payee output)\n3. Adds fee inputs from its UTXO pool\n4. Signs the fee inputs\n5. Returns the completed transaction and txid"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// -------------------------------------------------------",
+									"// Decode the challenge from Step 1",
+									"// -------------------------------------------------------",
+									"var challengeEncoded = pm.collectionVariables.get('challengeEncoded');",
+									"if (!challengeEncoded) {",
+									"    throw new Error('No challengeEncoded found. Run Step 1 first.');",
+									"}",
+									"",
+									"function base64urlDecode(str) {",
+									"    str = str.replace(/-/g, '+').replace(/_/g, '/');",
+									"    while (str.length % 4) str += '=';",
+									"    return atob(str);",
+									"}",
+									"",
+									"var challengeJSON = base64urlDecode(challengeEncoded);",
+									"var challenge = JSON.parse(challengeJSON);",
+									"pm.collectionVariables.set('challengeJSON', challengeJSON);",
+									"console.log('Challenge decoded. amount_sats:', challenge.amount_sats);",
+									"",
+									"// -------------------------------------------------------",
+									"// Store challenge binding fields for proof (Step 4)",
+									"// -------------------------------------------------------",
+									"pm.collectionVariables.set('challengeDomain', challenge.domain);",
+									"pm.collectionVariables.set('challengeMethod', challenge.method);",
+									"pm.collectionVariables.set('challengePath', challenge.path);",
+									"pm.collectionVariables.set('challengeQuery', challenge.query || '');",
+									"pm.collectionVariables.set('challengeReqHeadersSha256', challenge.req_headers_sha256);",
+									"pm.collectionVariables.set('challengeReqBodySha256', challenge.req_body_sha256);",
+									"",
+									"// -------------------------------------------------------",
+									"// Extract template rawtx_hex for the delegator request body",
+									"// -------------------------------------------------------",
+									"if (!challenge.template || !challenge.template.rawtx_hex) {",
+									"    throw new Error('No template in challenge. Gateway must run with TEMPLATE_MODE=true (Profile B).');",
+									"}",
+									"pm.collectionVariables.set('templateRawtxHex', challenge.template.rawtx_hex);",
+									"console.log('Template rawtx_hex extracted (' + challenge.template.rawtx_hex.length + ' hex chars)');",
+									"console.log('Template price_sats:', challenge.template.price_sats);",
+									"",
+									"// -------------------------------------------------------",
+									"// Compute challenge SHA-256 for proof binding",
+									"// Uses CryptoJS (built into Postman sandbox)",
+									"// -------------------------------------------------------",
+									"var challengeHash = CryptoJS.SHA256(challengeJSON).toString();",
+									"pm.collectionVariables.set('challengeSha256', challengeHash);",
+									"console.log('Challenge SHA-256:', challengeHash);"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Delegator returns 200 OK', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"var json = pm.response.json();",
+									"",
+									"pm.test('Response has completed_tx', function () {",
+									"    pm.expect(json).to.have.property('completed_tx');",
+									"    pm.expect(json.completed_tx).to.be.a('string');",
+									"    pm.expect(json.completed_tx.length).to.be.greaterThan(0);",
+									"});",
+									"",
+									"pm.test('Response has valid txid (64 hex chars)', function () {",
+									"    pm.expect(json).to.have.property('txid');",
+									"    pm.expect(json.txid).to.be.a('string');",
+									"    pm.expect(json.txid).to.have.lengthOf(64);",
+									"    pm.expect(json.txid).to.match(/^[0-9a-f]{64}$/);",
+									"});",
+									"",
+									"pm.test('completed_tx is valid hex', function () {",
+									"    pm.expect(json.completed_tx).to.match(/^[0-9a-f]+$/);",
+									"});",
+									"",
+									"// Store completed transaction and txid for proof building",
+									"if (json.completed_tx) {",
+									"    pm.collectionVariables.set('completedTxHex', json.completed_tx);",
+									"    console.log('Stored completedTxHex (' + json.completed_tx.length + ' hex chars)');",
+									"}",
+									"if (json.txid) {",
+									"    pm.collectionVariables.set('txid', json.txid);",
+									"    console.log('Stored txid:', json.txid);",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 3: Broadcast (placeholder - skipped in demo)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{gatewayUrl}}/health",
+							"host": ["{{gatewayUrl}}"],
+							"path": ["health"]
+						},
+						"description": "PLACEHOLDER: In production, the client broadcasts the completed_tx to the BSV network.\n\nIn demo mode (BROADCASTER=mock), this step is skipped because the mock broadcaster automatically accepts all transactions. The delegator already handled broadcast internally.\n\nThis request hits /health as a no-op to keep the step numbering consistent.\n\nFor production, broadcast options:\n\n  GorillaPool ARC (recommended primary):\n    POST https://arc.gorillapool.io/v1/tx\n    Content-Type: application/json\n    Body: {\"rawTx\": \"<completedTxHex>\"}\n    Note: ARC uses \"rawTx\" (not \"txhex\")\n\n  WhatsOnChain (fallback):\n    POST https://api.whatsonchain.com/v1/bsv/{network}/tx/raw\n    Content-Type: application/json\n    Body: {\"txhex\": \"<completedTxHex>\"}\n\nWhen using BROADCASTER=composite, the gateway proxies broadcast through GorillaPool ARC first with WoC fallback."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Broadcast step placeholder', function () {",
+									"    // In demo mode, the mock broadcaster auto-accepts transactions.",
+									"    // In production, POST completedTxHex to a BSV node or API.",
+									"    var completedTxHex = pm.collectionVariables.get('completedTxHex');",
+									"    var txid = pm.collectionVariables.get('txid');",
+									"    console.log('--- Broadcast Summary ---');",
+									"    console.log('txid:', txid);",
+									"    console.log('completed_tx length:', completedTxHex ? completedTxHex.length + ' hex chars' : 'N/A');",
+									"    console.log('In demo mode: broadcast is handled by MockBroadcaster');",
+									"    pm.expect(completedTxHex).to.not.be.undefined;",
+									"    pm.expect(txid).to.not.be.undefined;",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 4: Paid Request (submit proof)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X402-Proof",
+								"value": "{{proofHeader}}"
+							}
+						],
+						"url": {
+							"raw": "{{gatewayUrl}}/v1/expensive",
+							"host": ["{{gatewayUrl}}"],
+							"path": ["v1", "expensive"]
+						},
+						"description": "Submit the payment proof to access the protected resource.\n\nThe pre-request script builds the X402-Proof header from:\n- completed_tx (hex -> base64 for rawtx_b64 field)\n- txid from the delegator response\n- challenge_sha256 computed from the original challenge JSON\n- Request binding fields from the original challenge\n\nThe proof is a base64url-encoded JSON object:\n{\n  \"v\": \"1\",\n  \"scheme\": \"bsv-tx-v1\",\n  \"txid\": \"<64-char hex>\",\n  \"rawtx_b64\": \"<base64 of completed tx bytes>\",\n  \"challenge_sha256\": \"<64-char hex>\",\n  \"request\": {\n    \"domain\": \"localhost:8402\",\n    \"method\": \"GET\",\n    \"path\": \"/v1/expensive\",\n    \"query\": \"\",\n    \"req_headers_sha256\": \"<hex>\",\n    \"req_body_sha256\": \"<hex>\"\n  }\n}"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// -------------------------------------------------------",
+									"// Gather stored variables from Steps 1 and 2",
+									"// -------------------------------------------------------",
+									"var completedTxHex = pm.collectionVariables.get('completedTxHex');",
+									"var txid = pm.collectionVariables.get('txid');",
+									"var challengeSha256 = pm.collectionVariables.get('challengeSha256');",
+									"var challengeDomain = pm.collectionVariables.get('challengeDomain');",
+									"var challengeMethod = pm.collectionVariables.get('challengeMethod');",
+									"var challengePath = pm.collectionVariables.get('challengePath');",
+									"var challengeQuery = pm.collectionVariables.get('challengeQuery');",
+									"var challengeReqHeadersSha256 = pm.collectionVariables.get('challengeReqHeadersSha256');",
+									"var challengeReqBodySha256 = pm.collectionVariables.get('challengeReqBodySha256');",
+									"",
+									"if (!completedTxHex || !txid || !challengeSha256) {",
+									"    throw new Error('Missing required variables. Run Steps 1 and 2 first.');",
+									"}",
+									"",
+									"// -------------------------------------------------------",
+									"// Helper: convert hex string to standard base64",
+									"// -------------------------------------------------------",
+									"function hexToBase64(hex) {",
+									"    var bytes = [];",
+									"    for (var i = 0; i < hex.length; i += 2) {",
+									"        bytes.push(parseInt(hex.substr(i, 2), 16));",
+									"    }",
+									"    return btoa(String.fromCharCode.apply(null, bytes));",
+									"}",
+									"",
+									"// -------------------------------------------------------",
+									"// Helper: encode string to base64url (no padding)",
+									"// -------------------------------------------------------",
+									"function base64urlEncode(str) {",
+									"    return btoa(str).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');",
+									"}",
+									"",
+									"// -------------------------------------------------------",
+									"// Build the X402-Proof object per protocol spec",
+									"// -------------------------------------------------------",
+									"var rawtxB64 = hexToBase64(completedTxHex);",
+									"",
+									"var proof = {",
+									"    v: '1',",
+									"    scheme: 'bsv-tx-v1',",
+									"    txid: txid,",
+									"    rawtx_b64: rawtxB64,",
+									"    challenge_sha256: challengeSha256,",
+									"    request: {",
+									"        domain: challengeDomain,",
+									"        method: challengeMethod,",
+									"        path: challengePath,",
+									"        query: challengeQuery || '',",
+									"        req_headers_sha256: challengeReqHeadersSha256,",
+									"        req_body_sha256: challengeReqBodySha256",
+									"    }",
+									"};",
+									"",
+									"console.log('Proof object:', JSON.stringify(proof, null, 2));",
+									"",
+									"// Base64url encode the proof JSON for the header",
+									"var proofJson = JSON.stringify(proof);",
+									"var proofEncoded = base64urlEncode(proofJson);",
+									"pm.collectionVariables.set('proofHeader', proofEncoded);",
+									"console.log('X402-Proof header set (' + proofEncoded.length + ' chars)');"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Returns 200 OK (payment accepted)', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response has protected data', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json).to.have.property('data');",
+									"    pm.expect(json.data).to.include('100 satoshis');",
+									"    pm.expect(json).to.have.property('timestamp');",
+									"    pm.expect(json).to.have.property('path');",
+									"});",
+									"",
+									"pm.test('Has X402-Receipt header', function () {",
+									"    pm.response.to.have.header('X402-Receipt');",
+									"    var receipt = pm.response.headers.get('X402-Receipt');",
+									"    pm.expect(receipt).to.match(/^[0-9a-f]{64}$/);",
+									"});",
+									"",
+									"pm.test('Has X402-Status accepted', function () {",
+									"    var status = pm.response.headers.get('X402-Status');",
+									"    if (status) {",
+									"        pm.expect(status).to.eql('accepted');",
+									"    }",
+									"});",
+									"",
+									"pm.test('Has receipt timestamp', function () {",
+									"    var receiptTime = pm.response.headers.get('X402-Receipt-Time');",
+									"    if (receiptTime) {",
+									"        pm.expect(receiptTime).to.be.a('string');",
+									"    }",
+									"});",
+									"",
+									"console.log('=== x402 payment flow completed successfully! ===');",
+									"console.log('Receipt:', pm.response.headers.get('X402-Receipt'));",
+									"console.log('Status:', pm.response.headers.get('X402-Status'));"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "x402 Automatic Flow",
+			"description": "Automated end-to-end x402 payment flow using Postman Collection Runner.\n\nUse the Collection Runner to execute this folder. Each request uses postman.setNextRequest() to chain to the next step automatically.\n\nFlow: Trigger 402 -> Delegate Transaction -> Build Proof & Pay -> Done\n\nTo run: Select this folder in Collection Runner and click 'Run'.",
+			"item": [
+				{
+					"name": "Auto 1: Trigger 402 Challenge",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{gatewayUrl}}/v1/expensive",
+							"host": ["{{gatewayUrl}}"],
+							"path": ["v1", "expensive"]
+						},
+						"description": "Step 1 of the automatic flow. Requests the protected resource without payment, extracts the 402 challenge, decodes it, and chains to the delegator call."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Returns 402 Payment Required', function () {",
+									"    pm.response.to.have.status(402);",
+									"});",
+									"",
+									"// Extract challenge header",
+									"var challengeEncoded = pm.response.headers.get('X402-Challenge');",
+									"pm.expect(challengeEncoded).to.not.be.undefined;",
+									"pm.collectionVariables.set('challengeEncoded', challengeEncoded);",
+									"",
+									"// Decode challenge (base64url -> JSON)",
+									"function base64urlDecode(str) {",
+									"    str = str.replace(/-/g, '+').replace(/_/g, '/');",
+									"    while (str.length % 4) str += '=';",
+									"    return atob(str);",
+									"}",
+									"",
+									"var challengeJSON = base64urlDecode(challengeEncoded);",
+									"var challenge = JSON.parse(challengeJSON);",
+									"pm.collectionVariables.set('challengeJSON', challengeJSON);",
+									"",
+									"// Store challenge binding fields for proof",
+									"pm.collectionVariables.set('challengeDomain', challenge.domain);",
+									"pm.collectionVariables.set('challengeMethod', challenge.method);",
+									"pm.collectionVariables.set('challengePath', challenge.path);",
+									"pm.collectionVariables.set('challengeQuery', challenge.query || '');",
+									"pm.collectionVariables.set('challengeReqHeadersSha256', challenge.req_headers_sha256);",
+									"pm.collectionVariables.set('challengeReqBodySha256', challenge.req_body_sha256);",
+									"",
+									"// Extract template rawtx_hex",
+									"pm.expect(challenge.template).to.not.be.undefined;",
+									"pm.expect(challenge.template.rawtx_hex).to.not.be.undefined;",
+									"pm.collectionVariables.set('templateRawtxHex', challenge.template.rawtx_hex);",
+									"",
+									"// Compute challenge SHA-256 hash",
+									"var challengeHash = CryptoJS.SHA256(challengeJSON).toString();",
+									"pm.collectionVariables.set('challengeSha256', challengeHash);",
+									"",
+									"console.log('Auto 1: Challenge extracted, amount_sats:', challenge.amount_sats);",
+									"console.log('Auto 1: Chaining to delegator...');",
+									"postman.setNextRequest('Auto 2: Delegate Transaction');"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Auto 2: Delegate Transaction",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"partial_tx\":\"{{templateRawtxHex}}\"}"
+						},
+						"url": {
+							"raw": "{{delegatorUrl}}/delegate/x402",
+							"host": ["{{delegatorUrl}}"],
+							"path": ["delegate", "x402"]
+						},
+						"description": "Step 2 of the automatic flow. Sends the template transaction to the delegator for fee input addition and signing."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"var templateRawtxHex = pm.collectionVariables.get('templateRawtxHex');",
+									"if (!templateRawtxHex) {",
+									"    throw new Error('No templateRawtxHex. Auto flow must start from Auto 1.');",
+									"}"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Delegator returns 200 OK', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"var json = pm.response.json();",
+									"pm.expect(json.completed_tx).to.not.be.undefined;",
+									"pm.expect(json.txid).to.not.be.undefined;",
+									"",
+									"// Store for proof building",
+									"pm.collectionVariables.set('completedTxHex', json.completed_tx);",
+									"pm.collectionVariables.set('txid', json.txid);",
+									"",
+									"console.log('Auto 2: Delegation complete, txid:', json.txid);",
+									"console.log('Auto 2: Chaining to paid request...');",
+									"postman.setNextRequest('Auto 3: Submit Proof & Access Resource');"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Auto 3: Submit Proof & Access Resource",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X402-Proof",
+								"value": "{{proofHeader}}"
+							}
+						],
+						"url": {
+							"raw": "{{gatewayUrl}}/v1/expensive",
+							"host": ["{{gatewayUrl}}"],
+							"path": ["v1", "expensive"]
+						},
+						"description": "Step 3 (final) of the automatic flow. Builds the X402-Proof header from stored variables and submits it to access the protected resource."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// Gather variables from previous auto steps",
+									"var completedTxHex = pm.collectionVariables.get('completedTxHex');",
+									"var txid = pm.collectionVariables.get('txid');",
+									"var challengeSha256 = pm.collectionVariables.get('challengeSha256');",
+									"",
+									"if (!completedTxHex || !txid || !challengeSha256) {",
+									"    throw new Error('Missing variables. Auto flow must start from Auto 1.');",
+									"}",
+									"",
+									"// Convert hex to base64",
+									"function hexToBase64(hex) {",
+									"    var bytes = [];",
+									"    for (var i = 0; i < hex.length; i += 2) {",
+									"        bytes.push(parseInt(hex.substr(i, 2), 16));",
+									"    }",
+									"    return btoa(String.fromCharCode.apply(null, bytes));",
+									"}",
+									"",
+									"// Encode base64url (no padding)",
+									"function base64urlEncode(str) {",
+									"    return btoa(str).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');",
+									"}",
+									"",
+									"// Build proof object",
+									"var proof = {",
+									"    v: '1',",
+									"    scheme: 'bsv-tx-v1',",
+									"    txid: txid,",
+									"    rawtx_b64: hexToBase64(completedTxHex),",
+									"    challenge_sha256: challengeSha256,",
+									"    request: {",
+									"        domain: pm.collectionVariables.get('challengeDomain'),",
+									"        method: pm.collectionVariables.get('challengeMethod'),",
+									"        path: pm.collectionVariables.get('challengePath'),",
+									"        query: pm.collectionVariables.get('challengeQuery') || '',",
+									"        req_headers_sha256: pm.collectionVariables.get('challengeReqHeadersSha256'),",
+									"        req_body_sha256: pm.collectionVariables.get('challengeReqBodySha256')",
+									"    }",
+									"};",
+									"",
+									"var proofEncoded = base64urlEncode(JSON.stringify(proof));",
+									"pm.collectionVariables.set('proofHeader', proofEncoded);",
+									"console.log('Auto 3: Proof header built, submitting payment...');"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Returns 200 OK (payment accepted)', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response has protected data', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json).to.have.property('data');",
+									"});",
+									"",
+									"pm.test('Has X402-Receipt header', function () {",
+									"    pm.response.to.have.header('X402-Receipt');",
+									"});",
+									"",
+									"console.log('=== Auto flow completed successfully! ===');",
+									"console.log('Receipt:', pm.response.headers.get('X402-Receipt'));",
+									"",
+									"// Stop the collection runner",
+									"postman.setNextRequest(null);"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Delegator API",
+			"description": "Direct access to delegator service endpoints for fee delegation, UTXO management, and monitoring.\n\nThese endpoints are on the delegator service (default port 8403).",
+			"item": [
+				{
+					"name": "Delegate x402 Transaction",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"partial_tx\": \"{{templateRawtxHex}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{delegatorUrl}}/delegate/x402",
+							"host": ["{{delegatorUrl}}"],
+							"path": ["delegate", "x402"]
+						},
+						"description": "POST /delegate/x402 - Simplified x402 delegation endpoint.\n\nAccepts a partial transaction (the template from the gateway challenge), infers all parameters from the transaction structure (nonce outpoint, payee, amount, template mode), adds fee inputs, signs them, and returns the completed transaction.\n\nRequest: {\"partial_tx\": \"<hex>\"}\nResponse: {\"completed_tx\": \"<hex>\", \"txid\": \"<hex>\"}"
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    pm.test('Delegation successful', function () {",
+									"        var json = pm.response.json();",
+									"        pm.expect(json).to.have.property('completed_tx');",
+									"        pm.expect(json).to.have.property('txid');",
+									"        pm.expect(json.txid).to.have.lengthOf(64);",
+									"    });",
+									"} else {",
+									"    pm.test('Returns expected error', function () {",
+									"        var json = pm.response.json();",
+									"        pm.expect(json).to.have.property('error');",
+									"        console.log('Error:', json.error);",
+									"    });",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Fee Delegator - Submit TX",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"raw_tx\": \"<hex-encoded-transaction>\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{delegatorUrl}}/api/v1/tx",
+							"host": ["{{delegatorUrl}}"],
+							"path": ["api", "v1", "tx"]
+						},
+						"description": "POST /api/v1/tx - Fee delegator transaction submission API.\n\nSubmit a raw transaction for fee delegation. The delegator adds fee inputs from its fee UTXO pool, signs them, and returns the completed transaction.\n\nThis is the lower-level fee delegation API. For x402 protocol flow, use /delegate/x402 instead."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    pm.test('Returns 200 OK', function () {",
+									"        pm.response.to.have.status(200);",
+									"    });",
+									"} else {",
+									"    pm.test('Returns error (expected without valid raw_tx)', function () {",
+									"        pm.expect(pm.response.code).to.be.oneOf([400, 500]);",
+									"    });",
+									"}"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "UTXO Stats",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{delegatorUrl}}/api/utxo/stats",
+							"host": ["{{delegatorUrl}}"],
+							"path": ["api", "utxo", "stats"]
+						},
+						"description": "GET /api/utxo/stats - Returns fee UTXO pool statistics.\n\nShows total, available, leased, and consumed UTXO counts for the fee delegator pool."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Returns 200 OK', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Has pool stats', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json).to.have.property('total');",
+									"    pm.expect(json).to.have.property('available');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "UTXO Health",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{delegatorUrl}}/api/utxo/health",
+							"host": ["{{delegatorUrl}}"],
+							"path": ["api", "utxo", "health"]
+						},
+						"description": "GET /api/utxo/health - Returns the health status of the fee UTXO pool.\n\nStatus values: healthy, degraded, or critical (based on available UTXO count thresholds)."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Returns 200 OK', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Has health status', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json).to.have.property('status');",
+									"    pm.expect(json.status).to.be.oneOf(['healthy', 'degraded', 'critical']);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "API Health",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{delegatorUrl}}/api/health",
+							"host": ["{{delegatorUrl}}"],
+							"path": ["api", "health"]
+						},
+						"description": "GET /api/health - Returns the overall API health of the fee delegator service including uptime."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Returns 200 OK', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Service is healthy', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json).to.have.property('status');",
+									"    pm.expect(json.status).to.eql('ok');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Dashboard API",
+			"description": "Gateway dashboard API endpoints for configuration, analytics, and treasury management.\n\nThese endpoints are on the gateway service (default port 8402).",
+			"item": [
+				{
+					"name": "Get Config",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{gatewayUrl}}/api/v1/config",
+							"host": ["{{gatewayUrl}}"],
+							"path": ["api", "v1", "config"]
+						},
+						"description": "GET /api/v1/config - Returns the current gateway configuration.\n\nIncludes network, profile mode, pool sizes, pricing, addresses, broadcaster type, and feature flags."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Returns 200 OK', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Has configuration fields', function () {",
+									"    var json = pm.response.json();",
+									"    pm.expect(json).to.have.property('network');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Stats Summary",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{gatewayUrl}}/api/v1/stats/summary",
+							"host": ["{{gatewayUrl}}"],
+							"path": ["api", "v1", "stats", "summary"]
+						},
+						"description": "GET /api/v1/stats/summary - Returns a summary of gateway request statistics.\n\nIncludes total requests, 402s issued, payments accepted, error counts, and revenue."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Returns 200 OK', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Stats Timeseries",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{gatewayUrl}}/api/v1/stats/timeseries",
+							"host": ["{{gatewayUrl}}"],
+							"path": ["api", "v1", "stats", "timeseries"]
+						},
+						"description": "GET /api/v1/stats/timeseries - Returns time-bucketed request statistics for dashboard charting.\n\nUsed by the React dashboard to render request volume and payment charts."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Returns 200 OK', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Treasury Info",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{gatewayUrl}}/api/v1/treasury/info",
+							"host": ["{{gatewayUrl}}"],
+							"path": ["api", "v1", "treasury", "info"]
+						},
+						"description": "GET /api/v1/treasury/info - Returns treasury wallet information.\n\nIncludes treasury address, balance, and UTXO summary."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Returns 200 OK', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Treasury UTXOs",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{gatewayUrl}}/api/v1/treasury/utxos",
+							"host": ["{{gatewayUrl}}"],
+							"path": ["api", "v1", "treasury", "utxos"]
+						},
+						"description": "GET /api/v1/treasury/utxos - Returns the list of UTXOs held by the treasury wallet.\n\nShows txid, vout, satoshis, and confirmation status for each UTXO."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Returns 200 OK', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Treasury History",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{gatewayUrl}}/api/v1/treasury/history",
+							"host": ["{{gatewayUrl}}"],
+							"path": ["api", "v1", "treasury", "history"]
+						},
+						"description": "GET /api/v1/treasury/history - Returns the treasury transaction history.\n\nShows fan-out and sweep operations with timestamps and amounts."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Returns 200 OK', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		}
+	]
+}
