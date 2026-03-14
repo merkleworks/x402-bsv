@@ -211,8 +211,6 @@ func main() {
 
 	if cfg.RedisEnabled {
 		// Redis-backed pools with mode-namespaced keys (e.g. "live:nonce:", "mock:fee:")
-		detectLegacyKeys(rdb, logger)
-
 		np, err := pool.NewRedisPool(rdb, config.PoolPrefix(mode, "nonce"), keys.NonceKey, mainnet, cfg.LeaseTTL)
 		if err != nil {
 			logger.Error("failed to create nonce pool", "error", err)
@@ -233,33 +231,6 @@ func main() {
 			os.Exit(1)
 		}
 		paymentPool = pp
-
-		// In demo mode, seed pools with synthetic UTXOs (writes to mock:* namespace)
-		if demoMode {
-			var tmplOpts templateOpts
-			if cfg.TemplateMode {
-				seedPayeeAddr := cfg.PayeeAddress
-				if seedPayeeAddr == "" {
-					seedPayeeAddr = keys.FeeAddress
-				}
-				seedPayeeScript, err := addressToLockingScriptHex(seedPayeeAddr)
-				if err != nil {
-					logger.Error("failed to derive payee script for template seeding", "error", err)
-					os.Exit(1)
-				}
-				tmplOpts = templateOpts{
-					enabled:               true,
-					nonceKey:              keys.NonceKey,
-					payeeLockingScriptHex: seedPayeeScript,
-					priceSats:             cfg.TemplatePriceSats,
-				}
-			}
-			seedDemoPools(noncePool, feePool, paymentPool, cfg.PoolSize, cfg.FeeRate, cfg.FeeUTXOSats, tmplOpts, logger)
-			if cfg.TemplateMode {
-				logger.Info("demo mode: Profile B (Gateway Template) enabled",
-					"template_price_sats", cfg.TemplatePriceSats)
-			}
-		}
 
 		// Profile B: generate templates for nonce UTXOs that don't have them yet
 		if !demoMode && cfg.TemplateMode {
@@ -346,26 +317,7 @@ func main() {
 		paymentPool = pp
 
 		if demoMode {
-			var tmplOpts templateOpts
-			if cfg.TemplateMode {
-				seedPayeeAddr := cfg.PayeeAddress
-				if seedPayeeAddr == "" {
-					seedPayeeAddr = keys.FeeAddress
-				}
-				seedPayeeScript, err := addressToLockingScriptHex(seedPayeeAddr)
-				if err != nil {
-					logger.Error("failed to derive payee script for template seeding", "error", err)
-					os.Exit(1)
-				}
-				tmplOpts = templateOpts{
-					enabled:               true,
-					nonceKey:              keys.NonceKey,
-					payeeLockingScriptHex: seedPayeeScript,
-					priceSats:             cfg.TemplatePriceSats,
-				}
-			}
-			seedDemoPools(noncePool, feePool, paymentPool, cfg.PoolSize, cfg.FeeRate, cfg.FeeUTXOSats, tmplOpts, logger)
-			logger.Info("demo mode: in-memory pools with synthetic UTXOs")
+			logger.Info("demo mode: in-memory pools (empty — demo seeding not yet implemented)")
 		} else {
 			logger.Info("live mode: in-memory pools (empty — use Treasury fan-out to populate)")
 		}
@@ -455,9 +407,6 @@ func main() {
 			"interval_s", cfg.TreasuryPollInterval,
 		)
 	}
-
-	// Create event bus for SSE streaming to dashboard
-	eventBus := NewEventBus()
 
 	// Determine payee address and locking script
 	payeeAddr := cfg.PayeeAddress
@@ -638,20 +587,15 @@ func main() {
 	// --- Dashboard API (React dashboard backend) ---
 	dashAPI.RegisterRoutes(mux)
 
-	// SSE event stream
-	mux.HandleFunc("GET /api/v1/events/stream", handleEvents(eventBus))
-
-	// SSE event stream (backward-compat alias)
-	mux.HandleFunc("GET /demo/events", handleEvents(eventBus))
-
 	// --- React Dashboard SPA ---
-	mux.HandleFunc("GET /", handleDashboardSPA())
+	// Serve dashboard static files from the dashboard/dist directory if present.
+	mux.Handle("GET /", http.FileServer(http.Dir("dashboard/dist")))
 
 	// Start server
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      loggingMiddleware(mux, eventBus, dashAPI.Stats()),
+		Handler:      loggingMiddleware(mux, dashAPI.Stats()),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
@@ -744,7 +688,7 @@ func addressToLockingScriptHex(addr string) (string, error) {
 	return hex.EncodeToString(*s), nil
 }
 
-func loggingMiddleware(next http.Handler, eventBus *EventBus, stats *dashboard.StatsCollector) http.Handler {
+func loggingMiddleware(next http.Handler, stats *dashboard.StatsCollector) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rw := &responseWriter{ResponseWriter: w, status: 200}
@@ -768,18 +712,6 @@ func loggingMiddleware(next http.Handler, eventBus *EventBus, stats *dashboard.S
 				Status:    rw.status,
 				Duration:  duration,
 				FeeSats:   feeSats,
-			})
-		}
-
-		if eventBus != nil {
-			eventBus.Emit(Event{
-				Type:       eventTypeFromStatus(rw.status, r.URL.Path),
-				Path:       r.URL.Path,
-				Method:     r.Method,
-				Status:     rw.status,
-				DurationMS: duration.Milliseconds(),
-				Timestamp:  time.Now(),
-				Details:    eventDetailsFromHeaders(rw, r),
 			})
 		}
 	})
