@@ -791,6 +791,58 @@ func main() {
 		})
 	})
 
+	// --- Agent Card (A2A discovery) ---
+	agentCard := map[string]any{
+		"name":        "x402-BSV Demo Gateway",
+		"description": "Public test endpoint for the x402-BSV protocol reference implementation. Validates x402 client implementations against a live gatekeeper with real BSV mainnet settlement. The gated resource returns test data only. No accounts, no API keys — pay per request.",
+		"url":         "https://demo.x402.merkleworks.io",
+		"version":     buildVersion,
+		"provider": map[string]any{
+			"organization": "Merkleworks",
+			"url":          "https://merkleworks.io",
+		},
+		"documentationUrl": "https://x402.merkleworks.io",
+		"capabilities": map[string]any{
+			"streaming":         false,
+			"pushNotifications": false,
+		},
+		"skills": []map[string]any{
+			{
+				"id":          "x402-test",
+				"name":        "x402 Protocol Test Endpoint",
+				"description": "Send an unauthenticated request to receive a 402 challenge. Construct a BSV payment, broadcast, and retry with X-Payment proof header. The endpoint validates your proof and returns a 200 with test data. Use this to verify your x402 client implementation end-to-end.",
+				"inputModes":  []string{"application/json"},
+				"outputModes": []string{"application/json"},
+			},
+		},
+		"authentication": map[string]any{
+			"schemes":     []string{"x402-bsv"},
+			"description": "Per-request BSV micropayment via the x402 protocol. Send unauthenticated request → receive 402 challenge → settle on BSV → retry with X-Payment proof header.",
+		},
+		"x402": map[string]any{
+			"scheme":             "x402-bsv",
+			"version":            "1",
+			"settlement_network": "bsv-" + cfg.BSVNetwork,
+			"settlement_policy": map[string]any{
+				"require_confirmation": false,
+				"min_confirmations":    0,
+			},
+			"note": "Demo/test gateway. Settlement is real (BSV mainnet), but the gated resource returns example data. Intended as a conformance test point for x402 client implementations.",
+		},
+		"isDemo":             true,
+		"defaultInputModes":  []string{"application/json"},
+		"defaultOutputModes": []string{"application/json"},
+	}
+	agentCardJSON, _ := json.MarshalIndent(agentCard, "", "  ")
+
+	serveAgentCard := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Write(agentCardJSON)
+	}
+	mux.HandleFunc("GET /.well-known/agent-card.json", serveAgentCard)
+	mux.HandleFunc("GET /.well-known/agent.json", serveAgentCard)
+
 	// Embedded delegator routes (only when DELEGATOR_EMBEDDED=true)
 	// Uses the same { partial_tx } → { completed_tx, txid } API as the
 	// standalone delegator (cmd/delegator), parsing and inferring all
